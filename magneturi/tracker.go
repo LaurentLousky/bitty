@@ -6,21 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net"
+	"time"
 )
 
 const (
-	port           uint16 = 6888
-	bufferSize            = 2048
-	connectionID          = 0x41727101980
-	actionConnect         = 0
-	actionAnnounce        = 1
-	actionError           = 3
-	eventNone             = 0
-	eventCompleted        = 1
-	eventStarted          = 2
-	eventStopped          = 3
+	port                    uint16 = 6888
+	bufferSize                     = 2048
+	connectionID                   = 0x41727101980
+	actionConnect                  = 0
+	actionAnnounce                 = 1
+	actionError                    = 3
+	eventNone                      = 0
+	eventCompleted                 = 1
+	eventStarted                   = 2
+	eventStopped                   = 3
+	announceMinResponseSize        = 20
+	peerSize                       = 6
+	maxRequestAttempts             = 2
 )
 
 type connectionRequest struct {
@@ -53,12 +58,19 @@ type announceRequest struct {
 }
 
 type announceResponse struct {
+	header announceResponseHeader
+	body   announceResponseBody
+}
+type announceResponseHeader struct {
 	Action        int32
 	TransactionID int32
 	Interval      int32
 	Leechers      int32
 	Seeders       int32
-	// Peers         [1024]byte
+}
+
+type announceResponseBody struct {
+	Peers []peer
 }
 
 type peer struct {
@@ -79,6 +91,7 @@ func newTransactionID() int32 {
 // https://www.bittorrent.org/beps/bep_0012.html
 func (m *MagnetURI) requestPeers() error {
 	var c client
+	var p []peer
 	for _, tracker := range m.Trackers {
 		c.Tracker = tracker
 		connectResp, err := c.connect()
@@ -87,16 +100,24 @@ func (m *MagnetURI) requestPeers() error {
 		}
 		announceReq := m.newAnnounceRequest(connectResp)
 		announceResp, err := c.announce(announceReq)
-		fmt.Println(announceResp)
 		if err != nil {
 			continue
 		}
-		return nil
+		p = append(p, announceResp.body.Peers...)
+		if announceResp.header.Action == actionAnnounce {
+			fmt.Printf("Announced successfully to: %s \n", c.Tracker)
+			if len(p) > 0 {
+				fmt.Printf("Current peers %v \n", p)
+			}
+		}
 	}
 	if c.Socket != nil {
 		c.Socket.Close()
 	}
-	return errors.New("Failed to request peers")
+	if len(p) == 0 {
+		return errors.New("Failed to request peers")
+	}
+	return nil
 }
 
 func (m *MagnetURI) newAnnounceRequest(cr connectionResponse) announceRequest {
@@ -118,14 +139,14 @@ func (m *MagnetURI) newAnnounceRequest(cr connectionResponse) announceRequest {
 	return ar
 }
 
-func strToInt8(infoHash string) [20]int8 {
+func strToInt8(str string) [20]int8 {
 	length := 20
-	bytes := []byte(infoHash[:length])
-	var hash [20]int8
+	bytes := []byte(str[:length])
+	var result [20]int8
 	for i := 0; i < length; i++ {
-		hash[i] = int8(bytes[i])
+		result[i] = int8(bytes[i])
 	}
-	return hash
+	return result
 }
 
 func (c *client) connect() (connectionResponse, error) {
@@ -144,53 +165,79 @@ func (c *client) connect() (connectionResponse, error) {
 		return response, err
 	}
 
-	// TODO: set timeouts: it should try the request again up to 8 times,
-	// attempts := 0
-	// maxAttempts := 8
-	// var reqWait time.Duration = 15
+	// timeout: 15 * 2 ^ n (0-8)
 	// every 15 * 2 ^ n seconds where n is the number of the request attempt.
+	for attempts := 0; attempts < maxRequestAttempts; attempts++ {
+		timeoutDuration := time.Second * time.Duration(15*int(math.Pow(2.0, float64(attempts))))
+		c.Socket.SetReadDeadline(time.Now().Add(timeoutDuration))
 
-	writeBuffer := bytes.NewBuffer(make([]byte, 0, bufferSize))
-	binary.Write(writeBuffer, binary.BigEndian, &payload)
-	_, err = c.Socket.Write(writeBuffer.Bytes())
-	if err != nil {
-		return response, err
-	}
-	readData := make([]byte, bufferSize)
-	bytesRead, err := c.Socket.Read(readData)
+		writeBuffer := bytes.NewBuffer(make([]byte, 0, bufferSize))
+		binary.Write(writeBuffer, binary.BigEndian, &payload)
+		_, err = c.Socket.Write(writeBuffer.Bytes())
+		if err != nil {
+			return response, err
+		}
+		readData := make([]byte, bufferSize)
+		bytesRead, err := c.Socket.Read(readData)
+		if err, ok := err.(net.Error); ok && err.Timeout() {
+			attempts++
+			continue
+		}
+		if err != nil {
+			return response, err
+		}
 
-	if err != nil {
-		return response, err
+		if err != nil {
+			return response, err
+		}
+		readBuffer := bytes.NewBuffer(readData[:bytesRead])
+		err = binary.Read(readBuffer, binary.BigEndian, &response)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return response, err
+		}
+		if response.TransactionID != payload.TransactionID {
+			return response, errors.New("TransactionID from request does not match response")
+		}
+		if response.Action != actionConnect {
+			return response,
+				fmt.Errorf("Connect action response not equal to %d, instead is %d", actionConnect, response.Action)
+		}
+		return response, nil
 	}
-	readBuffer := bytes.NewBuffer(readData[:bytesRead])
-	err = binary.Read(readBuffer, binary.BigEndian, &response)
-	if err == io.EOF || err == io.ErrUnexpectedEOF {
-		return response, err
-	}
-	if response.TransactionID != payload.TransactionID {
-		return response, errors.New("TransactionID from request does not match response")
-	}
-	if response.Action != actionConnect {
-		return response,
-			fmt.Errorf("Connect action response not equal to %d, instead is %d", actionConnect, response.Action)
-	}
-	return response, nil
+	return response, errors.New("Failed to connect to tracker after 8 attempts")
 }
 
 func (c *client) announce(announceReq announceRequest) (announceResponse, error) {
 	var response announceResponse
-	writeBuffer := bytes.NewBuffer(make([]byte, 0, bufferSize))
-	// TODO: abstract this out to re-usable "read" and "write" methods
-	binary.Write(writeBuffer, binary.BigEndian, &announceReq)
-	c.Socket.Write(writeBuffer.Bytes())
-	readData := make([]byte, bufferSize)
-	bytesRead, err := c.Socket.Read(readData)
+	// timeout: 15 * 2 ^ n (0-8)
+	// every 15 * 2 ^ n seconds where n is the number of the request attempt.
+	for attempts := 0; attempts < maxRequestAttempts; attempts++ {
+		timeoutDuration := time.Second * time.Duration(15*int(math.Pow(2.0, float64(attempts))))
+		c.Socket.SetReadDeadline(time.Now().Add(timeoutDuration))
+		writeBuffer := bytes.NewBuffer(make([]byte, 0, bufferSize))
+		// TODO: abstract this out to re-usable "read" and "write" methods
+		binary.Write(writeBuffer, binary.BigEndian, &announceReq)
+		c.Socket.Write(writeBuffer.Bytes())
+		readData := make([]byte, bufferSize)
+		bytesRead, err := c.Socket.Read(readData)
+		if err != nil {
+			return response, err
+		}
+		readBuffer := bytes.NewBuffer(readData[:bytesRead])
+		err = binary.Read(readBuffer, binary.BigEndian, &response.header)
+		if bytesRead > announceMinResponseSize {
+			numPeers := (bytesRead - announceMinResponseSize) / peerSize
+			for i := 0; i < numPeers; i++ {
+				var p peer
+				err = binary.Read(readBuffer, binary.BigEndian, &p)
+				if err != nil {
+					break
+				}
+				response.body.Peers = append(response.body.Peers, p)
+			}
+		}
 
-	if err != nil {
-		return response, err
+		return response, nil
 	}
-	readBuffer := bytes.NewBuffer(readData[:bytesRead])
-	err = binary.Read(readBuffer, binary.BigEndian, &response)
-	println(bytesRead)
-	return response, nil
+	return response, errors.New("Failed to announce after 8 attempts")
 }

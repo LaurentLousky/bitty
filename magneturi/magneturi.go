@@ -25,6 +25,7 @@ func Parse(uri string) MagnetURI {
 	trackers := params["tr"]
 	for i := 0; i < len(trackers); i++ {
 		trackers[i] = strings.Split(trackers[i], "udp://")[1]
+		trackers[i] = strings.Trim(trackers[i], "/announce")
 	}
 	magnetURI := MagnetURI{
 		InfoHash: strings.Split(params["xt"][0], "urn:btih:")[1],
