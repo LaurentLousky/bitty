@@ -27,7 +27,7 @@ func Parse(uri string) MagnetURI {
 		trackers[i] = strings.Split(trackers[i], "udp://")[1]
 	}
 	magnetURI := MagnetURI{
-		InfoHash: params["xt"][0],
+		InfoHash: strings.Split(params["xt"][0], "urn:btih:")[1],
 		Name:     params["dn"][0],
 		Trackers: trackers,
 	}
@@ -43,7 +43,7 @@ func (m *MagnetURI) Download() error {
 	return nil
 }
 
-func generatePeerID() string {
+func newPeerID() string {
 	peerID := ""
 	numChars := 20
 	baseASCII := 48

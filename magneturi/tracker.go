@@ -8,17 +8,19 @@ import (
 	"io"
 	"math/rand"
 	"net"
-	"time"
 )
 
 const (
-	port           = 6888
-	bufferSize     = 1024
-	reqWaitSeconds = 15
-	connectionID   = 0x41727101980
-	actionConnect  = 0
-	actionAnnounce = 1
-	actionError    = 3
+	port           uint16 = 6888
+	bufferSize            = 2048
+	connectionID          = 0x41727101980
+	actionConnect         = 0
+	actionAnnounce        = 1
+	actionError           = 3
+	eventNone             = 0
+	eventCompleted        = 1
+	eventStarted          = 2
+	eventStopped          = 3
 )
 
 type connectionRequest struct {
@@ -46,7 +48,7 @@ type announceRequest struct {
 	IP            uint32
 	Key           uint32
 	NumWant       int32
-	port          uint16
+	Port          uint16
 	Extensions    uint16
 }
 
@@ -56,7 +58,7 @@ type announceResponse struct {
 	Interval      int32
 	Leechers      int32
 	Seeders       int32
-	Peers         []peer
+	// Peers         [1024]byte
 }
 
 type peer struct {
@@ -64,53 +66,99 @@ type peer struct {
 	Port uint16
 }
 
+type client struct {
+	Socket  net.Conn
+	Tracker string
+}
+
 func newTransactionID() int32 {
 	return int32(rand.Uint32())
 }
 
+// TODO: Try each tracker in parallel with goroutines
+// https://www.bittorrent.org/beps/bep_0012.html
 func (m *MagnetURI) requestPeers() error {
+	var c client
 	for _, tracker := range m.Trackers {
-		connectResp, err := m.connect(tracker)
+		c.Tracker = tracker
+		connectResp, err := c.connect()
 		if err != nil {
 			continue
 		}
-		err = m.announce(connectResp)
+		announceReq := m.newAnnounceRequest(connectResp)
+		announceResp, err := c.announce(announceReq)
+		fmt.Println(announceResp)
 		if err != nil {
 			continue
 		}
 		return nil
 	}
+	if c.Socket != nil {
+		c.Socket.Close()
+	}
 	return errors.New("Failed to request peers")
 }
 
-func (m *MagnetURI) connect(tracker string) (connectionResponse, error) {
+func (m *MagnetURI) newAnnounceRequest(cr connectionResponse) announceRequest {
+	ar := announceRequest{
+		ConnectionID:  cr.ConnectionID,
+		Action:        actionAnnounce,
+		TransactionID: newTransactionID(),
+		InfoHash:      strToInt8(m.InfoHash),
+		PeerID:        strToInt8(newPeerID()),
+		Downloaded:    0,
+		Left:          0,
+		Uploaded:      0,
+		Event:         eventNone,
+		IP:            0,
+		Key:           uint32(newTransactionID()),
+		NumWant:       -1,
+		Port:          port,
+	}
+	return ar
+}
+
+func strToInt8(infoHash string) [20]int8 {
+	length := 20
+	bytes := []byte(infoHash[:length])
+	var hash [20]int8
+	for i := 0; i < length; i++ {
+		hash[i] = int8(bytes[i])
+	}
+	return hash
+}
+
+func (c *client) connect() (connectionResponse, error) {
 	payload := connectionRequest{
 		ConnectionID:  connectionID,
 		Action:        0,
 		TransactionID: newTransactionID(),
 	}
 	var response connectionResponse
+	raddr, err := net.ResolveUDPAddr("udp", c.Tracker)
+	if err != nil {
+		return response, err
+	}
+	c.Socket, err = net.DialUDP("udp", nil, raddr)
+	if err != nil {
+		return response, err
+	}
 
-	raddr, err := net.ResolveUDPAddr("udp", tracker)
-	if err != nil {
-		return response, err
-	}
-	conn, err := net.DialUDP("udp", nil, raddr)
-	if err != nil {
-		return response, err
-	}
-	defer conn.Close()
+	// TODO: set timeouts: it should try the request again up to 8 times,
+	// attempts := 0
+	// maxAttempts := 8
+	// var reqWait time.Duration = 15
+	// every 15 * 2 ^ n seconds where n is the number of the request attempt.
 
 	writeBuffer := bytes.NewBuffer(make([]byte, 0, bufferSize))
-
-	binary.Write(writeBuffer, binary.BigEndian, payload)
-	_, err = conn.Write(writeBuffer.Bytes())
+	binary.Write(writeBuffer, binary.BigEndian, &payload)
+	_, err = c.Socket.Write(writeBuffer.Bytes())
 	if err != nil {
 		return response, err
 	}
 	readData := make([]byte, bufferSize)
-	conn.SetReadDeadline(time.Now().Add(reqWaitSeconds * time.Second))
-	bytesRead, err := conn.Read(readData)
+	bytesRead, err := c.Socket.Read(readData)
+
 	if err != nil {
 		return response, err
 	}
@@ -129,7 +177,20 @@ func (m *MagnetURI) connect(tracker string) (connectionResponse, error) {
 	return response, nil
 }
 
-func (m *MagnetURI) announce(cr connectionResponse) error {
-	// TODO
-	return nil
+func (c *client) announce(announceReq announceRequest) (announceResponse, error) {
+	var response announceResponse
+	writeBuffer := bytes.NewBuffer(make([]byte, 0, bufferSize))
+	// TODO: abstract this out to re-usable "read" and "write" methods
+	binary.Write(writeBuffer, binary.BigEndian, &announceReq)
+	c.Socket.Write(writeBuffer.Bytes())
+	readData := make([]byte, bufferSize)
+	bytesRead, err := c.Socket.Read(readData)
+
+	if err != nil {
+		return response, err
+	}
+	readBuffer := bytes.NewBuffer(readData[:bytesRead])
+	err = binary.Read(readBuffer, binary.BigEndian, &response)
+	println(bytesRead)
+	return response, nil
 }
