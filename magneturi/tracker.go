@@ -11,6 +11,8 @@ import (
 	"math/rand"
 	"net"
 	"time"
+
+	"github.com/laurentlousky/stream/peer"
 )
 
 const (
@@ -70,12 +72,7 @@ type announceResponseHeader struct {
 }
 
 type announceResponseBody struct {
-	Peers []peer
-}
-
-type peer struct {
-	IP   net.IP
-	Port uint16
+	Peers []peer.Peer
 }
 
 type client struct {
@@ -87,7 +84,7 @@ func newTransactionID() int32 {
 	return int32(rand.Uint32())
 }
 
-func (m *MagnetURI) requestPeers() (announceResponse, error) {
+func (m *MagnetURI) requestPeers() ([]peer.Peer, error) {
 	var c client
 	var announceResp announceResponse
 	for _, tracker := range m.Trackers {
@@ -109,12 +106,12 @@ func (m *MagnetURI) requestPeers() (announceResponse, error) {
 			fmt.Printf("Seeders: %v \n", announceResp.header.Seeders)
 			fmt.Printf("Leechers: %v \n", announceResp.header.Leechers)
 		}
-		return announceResp, nil
+		return announceResp.body.Peers, nil
 	}
 	if c.Socket != nil {
 		c.Socket.Close()
 	}
-	return announceResp, errors.New("Failed to request peers")
+	return announceResp.body.Peers, errors.New("Failed to request peers")
 }
 
 func (m *MagnetURI) newAnnounceRequest(cr connectionResponse) announceRequest {
@@ -172,7 +169,7 @@ func (c *client) announce(announceReq announceRequest) (announceResponse, error)
 	if bytesRead > announceMinResponseSize {
 		numPeers := (bytesRead - announceMinResponseSize) / peerSize
 		for i := 0; i < numPeers; i++ {
-			var p peer
+			var p peer.Peer
 			var ipBuf [4]byte
 			err = binary.Read(readBuffer, binary.BigEndian, &ipBuf)
 			err = binary.Read(readBuffer, binary.BigEndian, &p.Port)

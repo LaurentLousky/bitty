@@ -37,8 +37,8 @@ func Parse(uri string) MagnetURI {
 
 // Download a Magnet URI torrent to the file system
 func (m *MagnetURI) Download() error {
-	res, err := m.requestPeers()
-	println(res.header.Seeders)
+	peers, err := m.requestPeers()
+	println(peers)
 	if err != nil {
 		return err
 	}
