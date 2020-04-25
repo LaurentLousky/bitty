@@ -3,7 +3,6 @@ package magneturi
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -119,6 +118,7 @@ func (m *MagnetURI) newAnnounceRequest(cr connectionResponse) announceRequest {
 		ConnectionID:  cr.ConnectionID,
 		Action:        actionAnnounce,
 		TransactionID: newTransactionID(),
+		InfoHash:      m.InfoHash,
 		Downloaded:    0,
 		Left:          2000000000, //idk how to get this
 		Uploaded:      0,
@@ -128,9 +128,7 @@ func (m *MagnetURI) newAnnounceRequest(cr connectionResponse) announceRequest {
 		NumWant:       -1,
 		Port:          port,
 	}
-	infoHash, _ := hex.DecodeString(m.InfoHash)
-	copy(ar.InfoHash[:20], infoHash)
-	copy(ar.PeerID[:20], newPeerID())
+	copy(ar.PeerID[:20], peer.PeerID)
 	return ar
 }
 

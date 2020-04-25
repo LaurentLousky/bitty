@@ -1,15 +1,16 @@
 package magneturi
 
 import (
-	"math/rand"
+	"encoding/hex"
 	"net/url"
 	"strings"
-	"time"
+
+	"github.com/laurentlousky/stream/peer"
 )
 
 // MagnetURI https://en.wikipedia.org/wiki/Magnet_URI_scheme
 type MagnetURI struct {
-	InfoHash string   // xt
+	InfoHash [20]byte // xt
 	Name     string   // dn
 	Trackers []string // tr
 }
@@ -28,31 +29,25 @@ func Parse(uri string) MagnetURI {
 		trackers[i] = strings.Trim(trackers[i], "/announce")
 	}
 	magnetURI := MagnetURI{
-		InfoHash: strings.Split(params["xt"][0], "urn:btih:")[1],
 		Name:     params["dn"][0],
 		Trackers: trackers,
 	}
+	infoHash, _ := hex.DecodeString(strings.Split(params["xt"][0], "urn:btih:")[1])
+	copy(magnetURI.InfoHash[:20], infoHash)
 	return magnetURI
 }
 
 // Download a Magnet URI torrent to the file system
 func (m *MagnetURI) Download() error {
 	peers, err := m.requestPeers()
-	println(peers)
+	file := peer.File{
+		Name:     m.Name,
+		InfoHash: m.InfoHash,
+		Peers:    peers,
+	}
+	peer.Download(file)
 	if err != nil {
 		return err
 	}
 	return nil
-}
-
-func newPeerID() string {
-	peerID := ""
-	numChars := 20
-	baseASCII := 48
-	baseNum := 10
-	rand.Seed(time.Now().UTC().UnixNano())
-	for i := 0; i < numChars; i++ {
-		peerID += (string)(rand.Intn(baseNum) + baseASCII)
-	}
-	return peerID
 }
