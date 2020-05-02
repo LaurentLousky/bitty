@@ -250,10 +250,8 @@ func (p *peerConnection) handleExtMessage(m message) error {
 }
 
 func (p *peerConnection) extHandshake(bencodeData bencodeDict) error {
-	var messageLength uint32 = 1 + 1 + 26 // ID + extID + d1:mde13:metadata_sizei0ee
 	m := message{
-		Length: messageLength,
-		ID:     msgExtended,
+		ID: msgExtended,
 	}
 	extM := extMessage{
 		ID: extMsgHandshake,
@@ -281,7 +279,6 @@ func (p *peerConnection) extHandshake(bencodeData bencodeDict) error {
 }
 
 func (p *peerConnection) extReqMetadata() error {
-	var messageLength uint32 = 1 + 1 + 25 // ID + extID + d8:msg_typei0e5:piecei0ee
 	extP := metadataPayload{
 		Type:  0,
 		Piece: 0,
@@ -291,8 +288,7 @@ func (p *peerConnection) extReqMetadata() error {
 		Bencode: extP,
 	}
 	m := message{
-		Length: messageLength,
-		ID:     msgExtended,
+		ID: msgExtended,
 	}
 	err := p.writeExtMessage(m, extM)
 	if err != nil {
@@ -325,7 +321,6 @@ func (p *peerConnection) writeExtMessage(m message, extM extMessage) error {
 	payload := bytes.NewBuffer(make([]byte, 0, bufferSize))
 	binary.Write(payload, binary.BigEndian, &extM.ID)
 	bencode.Marshal(payload, extM.Bencode)
-	m.Length = uint32(payload.Len() + 1) // ID + payload
 	m.Payload = payload.Bytes()
 	err := p.writeMessage(m)
 	if err != nil {
@@ -336,7 +331,8 @@ func (p *peerConnection) writeExtMessage(m message, extM extMessage) error {
 
 func (p *peerConnection) writeMessage(m message) error {
 	writeBuffer := bytes.NewBuffer(make([]byte, 0, bufferSize))
-	binary.Write(writeBuffer, binary.BigEndian, &m.Length)
+	var length uint32 = uint32(len(m.Payload) + 1) // ID + payload
+	binary.Write(writeBuffer, binary.BigEndian, &length)
 	binary.Write(writeBuffer, binary.BigEndian, &m.ID)
 	binary.Write(writeBuffer, binary.BigEndian, &m.Payload)
 	bytesWritten, err := p.Socket.Write(writeBuffer.Bytes())
