@@ -35,6 +35,7 @@ const (
 	msgPort          uint8  = 9
 	msgExtended      uint8  = 20
 	extMsgHandshake  uint8  = 0
+	extMsgMetadata   int    = 2
 	extMetadata      string = "ut_metadata"
 )
 
@@ -257,7 +258,9 @@ func (p *peerConnection) extHandshake(bencodeData bencodeDict) error {
 	extM := extMessage{
 		ID: extMsgHandshake,
 		Bencode: bencodeDict{
-			M: make(map[string]int),
+			M: map[string]int{
+				"ut_metadata": extMsgMetadata,
+			},
 		},
 	}
 	err := p.writeExtMessage(m, extM)
@@ -319,9 +322,10 @@ func (p *peerConnection) downloadPiece() {
 
 func (p *peerConnection) writeExtMessage(m message, extM extMessage) error {
 	// <len><id><extId><ut_metadata dict>
-	payload := bytes.NewBuffer(make([]byte, 0, m.Length-1))
+	payload := bytes.NewBuffer(make([]byte, 0, bufferSize))
 	binary.Write(payload, binary.BigEndian, &extM.ID)
 	bencode.Marshal(payload, extM.Bencode)
+	m.Length = uint32(payload.Len() + 1) // ID + payload
 	m.Payload = payload.Bytes()
 	err := p.writeMessage(m)
 	if err != nil {
