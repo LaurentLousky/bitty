@@ -92,8 +92,8 @@ type extMessage struct {
 }
 
 type bencodeDict struct {
-	M            map[string]int "m"
-	metadataSize int            "metadata_size"
+	M map[string]int "m"
+	// metadataSize int            "metadata_size"
 }
 
 type metadataPayload struct {
@@ -319,7 +319,7 @@ func (p *peerConnection) downloadPiece() {
 
 func (p *peerConnection) writeExtMessage(m message, extM extMessage) error {
 	// <len><id><extId><ut_metadata dict>
-	payload := bytes.NewBuffer(make([]byte, m.Length-1))
+	payload := bytes.NewBuffer(make([]byte, 0, m.Length-1))
 	binary.Write(payload, binary.BigEndian, &extM.ID)
 	bencode.Marshal(payload, extM.Bencode)
 	m.Payload = payload.Bytes()
@@ -332,8 +332,8 @@ func (p *peerConnection) writeExtMessage(m message, extM extMessage) error {
 
 func (p *peerConnection) writeMessage(m message) error {
 	writeBuffer := bytes.NewBuffer(make([]byte, 0, bufferSize))
-	binary.Write(writeBuffer, binary.BigEndian, &m.ID)
 	binary.Write(writeBuffer, binary.BigEndian, &m.Length)
+	binary.Write(writeBuffer, binary.BigEndian, &m.ID)
 	binary.Write(writeBuffer, binary.BigEndian, &m.Payload)
 	bytesWritten, err := p.Socket.Write(writeBuffer.Bytes())
 	fmt.Printf("Bytes written to socket: %d \n", bytesWritten)
