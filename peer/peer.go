@@ -9,37 +9,31 @@ import (
 	"net"
 	"strconv"
 	"time"
-
-	"github.com/jackpal/bencode-go"
 )
 
 const (
 	// PeerID is our peer ID
-	PeerID              = "-LO00177770000077777"
-	protocolStr         = "BitTorrent protocol"
-	protocolLen   uint8 = 19
-	bufferSize          = 1024
-	handshakeSize       = 68
+	PeerID                        = "-LO00177770000077777"
+	protocolStr                   = "BitTorrent protocol"
+	protocolLen     uint8         = 19
+	bufferSize                    = 1024
+	handshakeSize                 = 68
+	timeoutDuration time.Duration = 3 * time.Second
 )
 
 const (
-	msgChoke         uint8  = 0
-	msgUnchoke       uint8  = 1
-	msgInterested    uint8  = 2
-	msgNotInterested uint8  = 3
-	msgHave          uint8  = 4
-	msgBitfield      uint8  = 5
-	msgRequest       uint8  = 6
-	msgPiece         uint8  = 7
-	msgCancel        uint8  = 8
-	msgPort          uint8  = 9
-	msgExtended      uint8  = 20
-	extMsgHandshake  uint8  = 0
-	extMsgMetadata   int    = 2
-	extMetadata      string = "ut_metadata"
+	msgChoke         uint8 = 0
+	msgUnchoke       uint8 = 1
+	msgInterested    uint8 = 2
+	msgNotInterested uint8 = 3
+	msgHave          uint8 = 4
+	msgBitfield      uint8 = 5
+	msgRequest       uint8 = 6
+	msgPiece         uint8 = 7
+	msgCancel        uint8 = 8
+	msgPort          uint8 = 9
+	msgExtended      uint8 = 20
 )
-
-var timeoutDuration time.Duration = 3 * time.Second
 
 // Peer is the IP and Port of a host in the swarm
 type Peer struct {
@@ -53,6 +47,7 @@ type File struct {
 	Name     string
 	Peers    []Peer
 	Bitfield []byte
+	Metadata torrentInfo
 }
 
 // A block is downloaded by the client when the client is interested in a peer,
@@ -64,13 +59,16 @@ type File struct {
 // each peer even when the client is choked. This will allow peers to know if the
 // client will begin downloading when it is unchoked (and vice-versa).
 type peerConnection struct {
-	Socket         net.Conn
-	File           File
-	AmChoking      bool
-	AmInterested   bool
-	PeerChoking    bool
-	PeerInterested bool
-	ExtMetadata    uint8
+	Socket               net.Conn
+	File                 File
+	AmChoking            bool
+	AmInterested         bool
+	PeerChoking          bool
+	PeerInterested       bool
+	ExtMetadata          uint8
+	CurrentMetadataPiece int
+	MetadataSize         int
+	MetadataBuff         *bytes.Buffer
 }
 
 type handshake struct {
@@ -85,21 +83,6 @@ type message struct {
 	Length  uint32
 	ID      uint8
 	Payload []byte
-}
-
-type extMessage struct {
-	ID      uint8
-	Bencode interface{}
-}
-
-type bencodeDict struct {
-	M map[string]int "m"
-	// metadataSize int            "metadata_size"
-}
-
-type metadataPayload struct {
-	Type  int "msg_type"
-	Piece int "piece"
 }
 
 func (p Peer) String() string {
@@ -125,12 +108,15 @@ func Download(file File) {
 
 func newPeerConnection(file File, socket net.Conn) (p *peerConnection) {
 	return &peerConnection{
-		Socket:         socket,
-		File:           file,
-		AmChoking:      true,
-		AmInterested:   false,
-		PeerChoking:    true,
-		PeerInterested: false,
+		Socket:               socket,
+		File:                 file,
+		AmChoking:            true,
+		AmInterested:         false,
+		PeerChoking:          true,
+		PeerInterested:       false,
+		CurrentMetadataPiece: 0,
+		MetadataSize:         0,
+		MetadataBuff:         &bytes.Buffer{},
 	}
 }
 
@@ -186,16 +172,6 @@ func (p *peerConnection) handshake() error {
 	return nil
 }
 
-// BEP 0010
-func checkExtensions(h handshake) error {
-	// The bit selected for the extension protocol is bit 20 from the right
-	// (counting starts at 0).
-	if h.Reserved[5]&0x10 == 0x10 {
-		return nil
-	}
-	return errors.New("Peer does not support extensions")
-}
-
 func (p *peerConnection) handleMessage(m message) error {
 	switch m.ID {
 	case msgChoke:
@@ -230,111 +206,34 @@ func (p *peerConnection) handleMessage(m message) error {
 	return nil
 }
 
-func (p *peerConnection) handleExtMessage(m message) error {
-	reader := bytes.NewReader(m.Payload)
-	var extMessageID uint8
-	binary.Read(reader, binary.BigEndian, &extMessageID)
-	var bencodeData bencodeDict
-	err := bencode.Unmarshal(reader, &bencodeData)
-	if err != nil {
-		return err
-	}
-	if extMessageID == extMsgHandshake {
-		// TODO: make sure we dont do this if we already have the metadata
-		err := p.extHandshake(bencodeData)
-		if err != nil {
-
-		}
-	}
-	return nil
-}
-
-func (p *peerConnection) extHandshake(bencodeData bencodeDict) error {
-	m := message{
-		ID: msgExtended,
-	}
-	extM := extMessage{
-		ID: extMsgHandshake,
-		Bencode: bencodeDict{
-			M: map[string]int{
-				"ut_metadata": extMsgMetadata,
-			},
-		},
-	}
-	err := p.writeExtMessage(m, extM)
-	if err != nil {
-		return err
-	}
-	resp, err := p.readMessage()
-	if err != nil {
-		return err
-	}
-	println(resp.ID)
-
-	if val, ok := bencodeData.M[extMetadata]; ok {
-		p.ExtMetadata = uint8(val)
-		p.extReqMetadata()
-	}
-	return nil
-}
-
-func (p *peerConnection) extReqMetadata() error {
-	extP := metadataPayload{
-		Type:  0,
-		Piece: 0,
-	}
-	extM := extMessage{
-		ID:      p.ExtMetadata,
-		Bencode: extP,
-	}
-	m := message{
-		ID: msgExtended,
-	}
-	err := p.writeExtMessage(m, extM)
-	if err != nil {
-		return err
-	}
-
-	resp, err := p.readMessage()
-	if err != nil {
-		return err
-	}
-	println(resp.ID)
-	return nil
-}
-
 func (p *peerConnection) setPiece(index uint32) {
 	var bitInByte uint32 = index % 8
 	var byteIndex uint32 = index / 8
-	var value uint8 = p.File.Bitfield[byteIndex]
 	// start at the beginning of the byte, then shift right
 	var newBit uint8 = 128 >> (bitInByte - 1)
-	p.File.Bitfield[byteIndex] = value | newBit
+	p.File.Bitfield[byteIndex] |= newBit
 }
 
 func (p *peerConnection) downloadPiece() {
 	println("Beginnning to download peice")
 }
 
-func (p *peerConnection) writeExtMessage(m message, extM extMessage) error {
-	// <len><id><extId><ut_metadata dict>
-	payload := bytes.NewBuffer(make([]byte, 0, bufferSize))
-	binary.Write(payload, binary.BigEndian, &extM.ID)
-	bencode.Marshal(payload, extM.Bencode)
-	m.Payload = payload.Bytes()
-	err := p.writeMessage(m)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
+// <len><id><payload>
 func (p *peerConnection) writeMessage(m message) error {
 	writeBuffer := bytes.NewBuffer(make([]byte, 0, bufferSize))
 	var length uint32 = uint32(len(m.Payload) + 1) // ID + payload
-	binary.Write(writeBuffer, binary.BigEndian, &length)
-	binary.Write(writeBuffer, binary.BigEndian, &m.ID)
-	binary.Write(writeBuffer, binary.BigEndian, &m.Payload)
+	err := binary.Write(writeBuffer, binary.BigEndian, &length)
+	if err != nil {
+		return err
+	}
+	err = binary.Write(writeBuffer, binary.BigEndian, &m.ID)
+	if err != nil {
+		return err
+	}
+	err = binary.Write(writeBuffer, binary.BigEndian, &m.Payload)
+	if err != nil {
+		return err
+	}
 	bytesWritten, err := p.Socket.Write(writeBuffer.Bytes())
 	fmt.Printf("Bytes written to socket: %d \n", bytesWritten)
 	if err != nil {
@@ -363,7 +262,10 @@ func (p *peerConnection) readMessage() (message, error) {
 
 func (p *peerConnection) write(payload interface{}) error {
 	writeBuffer := bytes.NewBuffer(make([]byte, 0, bufferSize))
-	binary.Write(writeBuffer, binary.BigEndian, payload)
+	err := binary.Write(writeBuffer, binary.BigEndian, payload)
+	if err != nil {
+		return err
+	}
 	bytesWritten, err := p.Socket.Write(writeBuffer.Bytes())
 	fmt.Printf("Bytes written to socket: %d \n", bytesWritten)
 	if err != nil {
