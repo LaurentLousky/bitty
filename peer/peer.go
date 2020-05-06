@@ -47,7 +47,7 @@ type File struct {
 	Name     string
 	Peers    []Peer
 	Bitfield []byte
-	Metadata torrentInfo
+	Metadata *torrentInfo
 }
 
 // A block is downloaded by the client when the client is interested in a peer,

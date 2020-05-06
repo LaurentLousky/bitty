@@ -44,11 +44,17 @@ type metadataRequest struct {
 	Piece int `bencode:"piece"`
 }
 
+type fileInfo struct {
+	Length int      `bencode:"length"`
+	Path   []string `bencode:"path"`
+}
+
 type torrentInfo struct {
-	Pieces      string `bencode:"pieces"`
-	PieceLength int    `bencode:"piece length"`
-	Length      int    `bencode:"length"`
-	Name        string `bencode:"name"`
+	Pieces      string     `bencode:"pieces"`
+	PieceLength int        `bencode:"piece length"`
+	Length      int        `bencode:"length"`
+	Name        string     `bencode:"name"`
+	Files       []fileInfo `bencode:"files"`
 }
 
 type metadataResponse struct {
@@ -182,6 +188,7 @@ func (p *peerConnection) recvMetadata(m extMetadataMessage) error {
 		// decode entire metadata now that we have all the pieces
 		fmt.Println("last piece yo.")
 		err = bencode.Unmarshal(p.MetadataBuff, &info)
+		p.File.Metadata = &info
 	}
 	p.CurrentMetadataPiece++
 	return nil
