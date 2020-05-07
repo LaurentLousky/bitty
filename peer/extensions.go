@@ -3,6 +3,7 @@ package peer
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha1"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -187,8 +188,13 @@ func (p *peerConnection) recvMetadata(m extMetadataMessage) error {
 	if lastPiece {
 		// decode entire metadata now that we have all the pieces
 		fmt.Println("last piece yo.")
-		err = bencode.Unmarshal(p.MetadataBuff, &info)
-		p.File.Metadata = &info
+		hash := sha1.Sum(p.MetadataBuff.Bytes())
+		if hash == p.File.InfoHash {
+			err = bencode.Unmarshal(p.MetadataBuff, &info)
+			p.File.Metadata = &info
+		} else {
+			return errors.New("Metadata SHA-1 does not match info hash")
+		}
 	}
 	p.CurrentMetadataPiece++
 	return nil
