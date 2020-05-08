@@ -13,12 +13,13 @@ import (
 
 const (
 	// PeerID is our peer ID
-	PeerID                        = "-LO00177770000077777"
-	protocolStr                   = "BitTorrent protocol"
-	protocolLen     uint8         = 19
-	bufferSize                    = 1024
-	handshakeSize                 = 68
-	timeoutDuration time.Duration = 3 * time.Second
+	PeerID                         = "-LO00177770000077777"
+	protocolStr                    = "BitTorrent protocol"
+	protocolLen      uint8         = 19
+	bufferSize                     = 1024
+	handshakeSize                  = 68
+	timeoutDuration  time.Duration = 3 * time.Second
+	maxRequestLength               = 16384 //16KiB
 )
 
 const (
@@ -35,6 +36,8 @@ const (
 	msgExtended      uint8 = 20
 )
 
+var haveMetadata bool = false
+
 // Peer is the IP and Port of a host in the swarm
 type Peer struct {
 	IP   net.IP
@@ -46,21 +49,15 @@ type File struct {
 	InfoHash [20]byte
 	Name     string
 	Peers    []Peer
-	Bitfield []byte
-	Metadata *torrentInfo
+	Metadata *TorrentInfo
 }
 
 // A block is downloaded by the client when the client is interested in a peer,
 // and that peer is not choking the client. A block is uploaded by a client when
 // the client is not choking a peer, and that peer is interested in the client.
-
-// It is important for the client to keep its peers informed as to whether or not
-// it is interested in them. This state information should be kept up-to-date with
-// each peer even when the client is choked. This will allow peers to know if the
-// client will begin downloading when it is unchoked (and vice-versa).
 type peerConnection struct {
 	Socket               net.Conn
-	File                 File
+	File                 *File
 	AmChoking            bool
 	AmInterested         bool
 	PeerChoking          bool
@@ -69,6 +66,8 @@ type peerConnection struct {
 	CurrentMetadataPiece int
 	MetadataSize         int
 	MetadataBuff         *bytes.Buffer
+	Done                 bool
+	Bitfield             []byte
 }
 
 type handshake struct {
@@ -90,7 +89,7 @@ func (p Peer) String() string {
 }
 
 // Download begins the Peer Wire Protocol with each peer over TCP
-func Download(file File) {
+func Download(file *File) {
 	for i := 0; i < len(file.Peers); i++ {
 		conn, err := net.DialTimeout("tcp", file.Peers[i].String(), 3*time.Second)
 		if err != nil {
@@ -106,7 +105,7 @@ func Download(file File) {
 	}
 }
 
-func newPeerConnection(file File, socket net.Conn) (p *peerConnection) {
+func newPeerConnection(file *File, socket net.Conn) (p *peerConnection) {
 	return &peerConnection{
 		Socket:               socket,
 		File:                 file,
@@ -125,20 +124,6 @@ func (p *peerConnection) peerWireProtocol() error {
 	if err != nil {
 		return err
 	}
-
-	message, err := p.readMessage()
-	if err != nil {
-		return err
-	}
-	// check if the peer supports extensions
-	// if so, download the metadata
-	// otherwise, wait until we find a peer that supports this extension
-	// before continuing with this peer
-	// if message.ID != msgBitfield {
-	// 	p.Socket.Close()
-	// 	return errors.New("Expected to receive bitfield as first message")
-	// }
-	p.handleMessage(message)
 
 	done := false
 	for done == false {
@@ -183,10 +168,12 @@ func (p *peerConnection) handleMessage(m message) error {
 	case msgNotInterested:
 		p.PeerInterested = false
 	case msgHave:
+		// TODO: queue all "have" messages until we have the metadata
+		// we need to know how many pieces there are
 		// index := binary.BigEndian.Uint32(m.Payload)
 		// p.setPiece(index)
 	case msgBitfield:
-		p.File.Bitfield = m.Payload
+		p.Bitfield = m.Payload
 	case msgRequest:
 		payload := 0
 		p.write(&payload)
@@ -198,8 +185,6 @@ func (p *peerConnection) handleMessage(m message) error {
 	case msgPort:
 		payload := 0
 		p.write(&payload)
-	case msgExtended:
-		p.handleExtMessage(m)
 	default:
 		return errors.New("Cannot understand message ID")
 	}
@@ -211,7 +196,7 @@ func (p *peerConnection) setPiece(index uint32) {
 	var byteIndex uint32 = index / 8
 	// start at the beginning of the byte, then shift right
 	var newBit uint8 = 128 >> (bitInByte - 1)
-	p.File.Bitfield[byteIndex] |= newBit
+	p.Bitfield[byteIndex] |= newBit
 }
 
 func (p *peerConnection) downloadPiece() {

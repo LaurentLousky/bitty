@@ -40,10 +40,14 @@ func Parse(uri string) MagnetURI {
 // Download a Magnet URI torrent to the file system
 func (m *MagnetURI) Download() error {
 	peers, err := m.requestPeers()
-	file := peer.File{
+	file := &peer.File{
 		Name:     m.Name,
 		InfoHash: m.InfoHash,
 		Peers:    peers,
+	}
+	err = file.GetMetadata()
+	if err != nil {
+		return err
 	}
 	peer.Download(file)
 	if err != nil {
