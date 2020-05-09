@@ -74,10 +74,10 @@ type metadataResponseDict struct {
 func (file *File) GetMetadata() error {
 	for i := 0; i < len(file.Peers); i++ {
 		conn, err := net.DialTimeout("tcp", file.Peers[i].String(), 3*time.Second)
-		defer conn.Close()
 		if err != nil {
 			continue
 		}
+		defer conn.Close()
 		p := newPeerConnection(file, conn)
 		err = p.handshake()
 		if err != nil {
@@ -139,7 +139,7 @@ func (p *peerConnection) handleExtMessage(m message) (*TorrentInfo, error) {
 			return metadata, nil
 		}
 	}
-	return nil, errors.New("Unexpected extended message")
+	return nil, nil
 }
 
 func (p *peerConnection) extHandshake(bencodeData extHandshakeDict) error {
@@ -161,15 +161,15 @@ func (p *peerConnection) extHandshake(bencodeData extHandshakeDict) error {
 
 	if val, ok := bencodeData.M[extMetadata]; ok {
 		p.ExtMetadata = uint8(val)
-		p.extReqMetadata()
+		p.extReqMetadata(0)
 	}
 	return nil
 }
 
-func (p *peerConnection) extReqMetadata() error {
+func (p *peerConnection) extReqMetadata(piece int) error {
 	extP := metadataRequest{
 		Type:  0,
-		Piece: 0,
+		Piece: piece,
 	}
 	extM := extMessage{
 		ID:      p.ExtMetadata,
@@ -210,7 +210,7 @@ func (p *peerConnection) handleExtMetadata(m message) (*TorrentInfo, error) {
 		if metadata != nil {
 			return metadata, nil
 		}
-		break
+		return nil, nil
 	case msgTypeReject:
 		return nil, errors.New("Metadata request rejected by peer")
 	}
@@ -227,7 +227,7 @@ func (p *peerConnection) recvMetadata(m extMetadataMessage) (*TorrentInfo, error
 	}
 
 	lastPiece := reader.Size() < metadataPieceSize ||
-		(p.MetadataSize-(metadataPieceSize*p.CurrentMetadataPiece)) == 0
+		(p.MetadataSize-(int(reader.Size())+p.MetadataBuff.Len())) == 0
 	_, err := reader.WriteTo(p.MetadataBuff)
 	if err != nil {
 		return nil, err
@@ -243,6 +243,7 @@ func (p *peerConnection) recvMetadata(m extMetadataMessage) (*TorrentInfo, error
 		return nil, errors.New("Metadata SHA-1 does not match info hash")
 	}
 	p.CurrentMetadataPiece++
+	p.extReqMetadata(p.CurrentMetadataPiece)
 	return nil, nil
 }
 
