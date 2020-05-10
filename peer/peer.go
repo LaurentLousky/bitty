@@ -84,18 +84,37 @@ type message struct {
 	Payload []byte
 }
 
+type inputPiece struct {
+	index  int
+	hash   [20]byte
+	length int
+}
+
+type outputPiece struct {
+	index int
+	buf   []byte
+}
+
 func (p Peer) String() string {
 	return net.JoinHostPort(p.IP.String(), strconv.Itoa(int(p.Port)))
 }
 
 // Download begins the Peer Wire Protocol with each peer over TCP
-func Download(file *File) {
+func Download(file *File) error {
+	inputPieces := make(chan *inputPiece)
+	// outputPieces := make(chan *outputPiece)
+	for i := file.Metadata.MovieStartPiece; i < len(file.Metadata.PiecesList); i++ {
+		length, err := file.Metadata.calculatePieceSize(i)
+		if err != nil {
+			return err
+		}
+		inputPieces <- &inputPiece{i, file.Metadata.PiecesList[i], length}
+	}
 	for i := 0; i < len(file.Peers); i++ {
 		conn, err := net.DialTimeout("tcp", file.Peers[i].String(), 3*time.Second)
 		if err != nil {
 			continue
 		}
-		fmt.Printf("Local address: %v \n", conn.LocalAddr())
 		p := newPeerConnection(file, conn)
 		err = p.peerWireProtocol()
 		if err != nil {
@@ -103,6 +122,7 @@ func Download(file *File) {
 			continue
 		}
 	}
+	return errors.New("Some error here")
 }
 
 func newPeerConnection(file *File, socket net.Conn) (p *peerConnection) {
@@ -116,7 +136,19 @@ func newPeerConnection(file *File, socket net.Conn) (p *peerConnection) {
 		CurrentMetadataPiece: 0,
 		MetadataSize:         0,
 		MetadataBuff:         &bytes.Buffer{},
+		Bitfield:             newBitfield(file),
 	}
+}
+
+func newBitfield(file *File) []byte {
+	piecesPerByte := 8
+	hashLength := 20
+	hashPiecesLength := 0
+	if file.Metadata != nil {
+		hashPiecesLength = len(file.Metadata.Pieces)
+	}
+	numPieces := hashPiecesLength / hashLength
+	return make([]byte, numPieces/piecesPerByte)
 }
 
 func (p *peerConnection) peerWireProtocol() error {
@@ -168,12 +200,16 @@ func (p *peerConnection) handleMessage(m message) error {
 	case msgNotInterested:
 		p.PeerInterested = false
 	case msgHave:
-		// TODO: queue all "have" messages until we have the metadata
-		// we need to know how many pieces there are
-		// index := binary.BigEndian.Uint32(m.Payload)
-		// p.setPiece(index)
+		index := binary.BigEndian.Uint32(m.Payload)
+		p.setPiece(index)
+		if p.AmInterested != true {
+			return p.sendInterested()
+		}
 	case msgBitfield:
 		p.Bitfield = m.Payload
+		if p.AmInterested != true {
+			return p.sendInterested()
+		}
 	case msgRequest:
 		payload := 0
 		p.write(&payload)
@@ -195,12 +231,20 @@ func (p *peerConnection) setPiece(index uint32) {
 	var bitInByte uint32 = index % 8
 	var byteIndex uint32 = index / 8
 	// start at the beginning of the byte, then shift right
-	var newBit uint8 = 128 >> (bitInByte - 1)
+	var newBit uint8 = 128 >> bitInByte
 	p.Bitfield[byteIndex] |= newBit
 }
 
 func (p *peerConnection) downloadPiece() {
 	println("Beginnning to download peice")
+}
+
+func (p *peerConnection) sendInterested() error {
+	m := message{
+		Length: 1,
+		ID:     msgInterested,
+	}
+	return p.writeMessage(m)
 }
 
 // <len><id><payload>

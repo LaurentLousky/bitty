@@ -45,20 +45,6 @@ type metadataRequest struct {
 	Piece int `bencode:"piece"`
 }
 
-type fileInfo struct {
-	Length int      `bencode:"length"`
-	Path   []string `bencode:"path"`
-}
-
-// TorrentInfo represents the info section of a torrent file (the metadata)
-type TorrentInfo struct {
-	Pieces      string     `bencode:"pieces"`
-	PieceLength int        `bencode:"piece length"`
-	Length      int        `bencode:"length"`
-	Name        string     `bencode:"name"`
-	Files       []fileInfo `bencode:"files"`
-}
-
 type metadataResponse struct {
 	Bencode  metadataResponseDict
 	Metadata []byte
@@ -238,6 +224,7 @@ func (p *peerConnection) recvMetadata(m extMetadataMessage) (*TorrentInfo, error
 		hash := sha1.Sum(p.MetadataBuff.Bytes())
 		if hash == p.File.InfoHash {
 			err = bencode.Unmarshal(p.MetadataBuff, &info)
+			info.MetadataSize = p.MetadataSize
 			return &info, nil
 		}
 		return nil, errors.New("Metadata SHA-1 does not match info hash")

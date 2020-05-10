@@ -35,15 +35,13 @@ plan for now
 flow
 ----
 
-either:
-
-simpler, less efficient
---
 1) first go through each peer sequentially until we get the metadata
-2) then start over and talk to them all concurrently to download file
-
-harder, more efficient
---
-1) talk to each peer concurrently, race to get the metadata
-2) share the metadata with other peer connections
-3) talk to them all concurrently to download file
+2) create an input channel that has a queue of pieces that need to be downloaded
+   create an output channel that has all the downloaded pieces   
+3) start a goroutine for each peer connection
+4) each connection will:
+    1. handshake, accept bitfield, accept have messages, etc
+    2. send an interested message
+    3. once unchoked, begins taking pieces from the input channel queue
+       and attempting to download them
+    4. if it fails to download them, it places it back on the queue (that way another go-routine can pick it up and attempt to download it)
