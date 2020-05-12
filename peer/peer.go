@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -129,7 +128,7 @@ func Download(file *File) error {
 		go startDownloadWorker(file, file.Peers[i], inputPieces, outputPieces)
 	}
 
-	f, err := os.Create(file.Metadata.MoviePath[len(file.Metadata.MoviePath)-1])
+	f, err := os.Create("movies/" + file.Metadata.MoviePath[len(file.Metadata.MoviePath)-1])
 	if err != nil {
 		return err
 	}
@@ -139,10 +138,10 @@ func Download(file *File) error {
 		f.WriteAt(donePiece.Buff, int64(donePiece.Index*file.Metadata.PieceLength))
 		fmt.Printf("Downloaded piece at index %d, of length: %d \n", donePiece.Index, len(donePiece.Buff))
 		fmt.Printf("Currently downloading from %d peers \n", runtime.NumGoroutine()-1)
-		fmt.Printf("Percent done: %0.2f %%", percentDone)
+		fmt.Printf("Percent done: %0.2f %% \n", percentDone)
 	}
 
-	return errors.New("Some error here")
+	return nil
 }
 
 func startDownloadWorker(file *File, peer Peer, inputPieces chan *inputPiece, outputPieces chan *outputPiece) {
@@ -230,7 +229,10 @@ func (p *peerConnection) peerWireProtocol() error {
 		if err != nil {
 			return err
 		}
-		p.handleMessage(message)
+		err = p.handleMessage(message)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -287,8 +289,6 @@ func (p *peerConnection) handleMessage(m message) error {
 	case msgPort:
 		payload := 0
 		p.write(&payload)
-	default:
-		return errors.New("Cannot understand message ID")
 	}
 	return nil
 }
@@ -318,8 +318,8 @@ func (p *peerConnection) attemptDownloadPiece(piece *inputPiece) ([]byte, error)
 	p.CurrentPiece = &state
 	// Setting a deadline helps get unresponsive peers unstuck.
 	// 30 seconds is more than enough time to download a 262 KB piece
-	p.Socket.SetDeadline(time.Now().Add(30 * time.Second))
-	defer p.Socket.SetDeadline(time.Time{}) // Disable the deadline
+	// p.Socket.SetDeadline(time.Now().Add(30 * time.Second))
+	// defer p.Socket.SetDeadline(time.Time{}) // Disable the deadline
 
 	for state.Downloaded < piece.Length {
 		// If unchoked, send requests until we have enough unfulfilled requests
