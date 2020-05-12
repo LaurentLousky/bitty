@@ -46,6 +46,9 @@ func (m *MagnetURI) Download() error {
 		Peers:    peers,
 	}
 	err = file.GetMetadata()
+	if err != nil {
+		return err
+	}
 	err = file.Metadata.PrepareForDownload()
 	if err != nil {
 		return err

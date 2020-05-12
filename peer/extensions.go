@@ -59,7 +59,7 @@ type metadataResponseDict struct {
 // GetMetadata gets the file's metadata from a peer and assigns it to the *File
 func (file *File) GetMetadata() error {
 	for i := 0; i < len(file.Peers); i++ {
-		conn, err := net.DialTimeout("tcp", file.Peers[i].String(), 3*time.Second)
+		conn, err := net.DialTimeout("tcp", file.Peers[i].String(), 6*time.Second)
 		if err != nil {
 			continue
 		}

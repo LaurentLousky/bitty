@@ -2,10 +2,12 @@ package peer
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strconv"
 	"time"
@@ -20,6 +22,7 @@ const (
 	handshakeSize                  = 68
 	timeoutDuration  time.Duration = 3 * time.Second
 	maxRequestLength               = 16384 //16KiB
+	maxBacklog                     = 5
 )
 
 const (
@@ -68,6 +71,15 @@ type peerConnection struct {
 	MetadataBuff         *bytes.Buffer
 	Done                 bool
 	Bitfield             []byte
+	CurrentPiece         *pieceState
+}
+
+type pieceState struct {
+	Index      int
+	Downloaded int
+	Requested  int
+	Backlog    int
+	Buff       []byte
 }
 
 type handshake struct {
@@ -85,14 +97,14 @@ type message struct {
 }
 
 type inputPiece struct {
-	index  int
-	hash   [20]byte
-	length int
+	Index  int
+	Hash   [20]byte
+	Length int
 }
 
 type outputPiece struct {
-	index int
-	buf   []byte
+	Index int
+	Buff  []byte
 }
 
 func (p Peer) String() string {
@@ -101,28 +113,65 @@ func (p Peer) String() string {
 
 // Download begins the Peer Wire Protocol with each peer over TCP
 func Download(file *File) error {
-	inputPieces := make(chan *inputPiece)
+	inputPieces := make(chan *inputPiece, numPiecesInMovie(file.Metadata))
 	// outputPieces := make(chan *outputPiece)
-	for i := file.Metadata.MovieStartPiece; i < len(file.Metadata.PiecesList); i++ {
+	for i := file.Metadata.MovieStartPiece; i < file.Metadata.MovieEndPiece; i++ {
 		length, err := file.Metadata.calculatePieceSize(i)
 		if err != nil {
 			return err
 		}
 		inputPieces <- &inputPiece{i, file.Metadata.PiecesList[i], length}
 	}
+
 	for i := 0; i < len(file.Peers); i++ {
-		conn, err := net.DialTimeout("tcp", file.Peers[i].String(), 3*time.Second)
-		if err != nil {
-			continue
-		}
-		p := newPeerConnection(file, conn)
-		err = p.peerWireProtocol()
-		if err != nil {
-			conn.Close()
-			continue
-		}
+		startDownloadWorker(file, file.Peers[i], inputPieces)
 	}
 	return errors.New("Some error here")
+}
+
+func startDownloadWorker(file *File, peer Peer, inputPieces chan *inputPiece) error {
+	conn, err := net.DialTimeout("tcp", peer.String(), 6*time.Second)
+	if err != nil {
+		return errors.New("Failed to connect to peer")
+	}
+	p := newPeerConnection(file, conn)
+	err = p.peerWireProtocol()
+	if err != nil {
+		conn.Close()
+		return errors.New("Failed to PWP with peer")
+	}
+	beginDownload(p, inputPieces)
+	return nil
+}
+
+func beginDownload(p *peerConnection, inputPieces chan *inputPiece) {
+	for piece := range inputPieces {
+		if !p.hasPiece(piece.Index) {
+			inputPieces <- piece
+			continue
+		}
+		buf, err := p.attemptDownloadPiece(piece)
+		if err != nil {
+			log.Println("Exiting", err)
+			inputPieces <- piece // Put piece back on the queue
+			return
+		}
+		err = validatePiece(piece, buf)
+		if err != nil {
+			log.Printf("Piece #%d failed integrity check\n", piece.Index)
+			inputPieces <- piece // Put piece back on the queue
+			continue
+		}
+		fmt.Printf("Downloaded piece of length: %d \n", len(buf))
+	}
+}
+
+func validatePiece(piece *inputPiece, downloadedData []byte) error {
+	hash := sha1.Sum(downloadedData)
+	if !bytes.Equal(hash[:], piece.Hash[:]) {
+		return fmt.Errorf("Index %d failed integrity check", piece.Index)
+	}
+	return nil
 }
 
 func newPeerConnection(file *File, socket net.Conn) (p *peerConnection) {
@@ -156,11 +205,15 @@ func (p *peerConnection) peerWireProtocol() error {
 	if err != nil {
 		return err
 	}
-
-	done := false
-	for done == false {
+	err = p.sendInterested()
+	if err != nil {
+		return err
+	}
+	for p.AmChoking {
 		message, err := p.readMessage()
-		fmt.Println(err)
+		if err != nil {
+			return err
+		}
 		p.handleMessage(message)
 	}
 	return nil
@@ -200,21 +253,18 @@ func (p *peerConnection) handleMessage(m message) error {
 	case msgNotInterested:
 		p.PeerInterested = false
 	case msgHave:
-		index := binary.BigEndian.Uint32(m.Payload)
+		index := int(binary.BigEndian.Uint32(m.Payload))
 		p.setPiece(index)
-		if p.AmInterested != true {
-			return p.sendInterested()
-		}
 	case msgBitfield:
 		p.Bitfield = m.Payload
-		if p.AmInterested != true {
-			return p.sendInterested()
-		}
 	case msgRequest:
 		payload := 0
 		p.write(&payload)
 	case msgPiece:
-		p.downloadPiece()
+		err := p.handlePiece(m)
+		if err != nil {
+			return err
+		}
 	case msgCancel:
 		payload := 0
 		p.write(&payload)
@@ -227,16 +277,105 @@ func (p *peerConnection) handleMessage(m message) error {
 	return nil
 }
 
-func (p *peerConnection) setPiece(index uint32) {
-	var bitInByte uint32 = index % 8
-	var byteIndex uint32 = index / 8
+func (p *peerConnection) setPiece(index int) {
+	bitInByte := index % 8
+	byteIndex := index / 8
 	// start at the beginning of the byte, then shift right
 	var newBit uint8 = 128 >> bitInByte
 	p.Bitfield[byteIndex] |= newBit
 }
 
-func (p *peerConnection) downloadPiece() {
-	println("Beginnning to download peice")
+func (p *peerConnection) hasPiece(index int) bool {
+	bitInByte := index % 8
+	byteIndex := index / 8
+	if byteIndex < 0 || byteIndex >= len(p.Bitfield) {
+		return false
+	}
+	return p.Bitfield[byteIndex]>>(7-bitInByte)&1 != 0
+}
+
+func (p *peerConnection) attemptDownloadPiece(piece *inputPiece) ([]byte, error) {
+	state := pieceState{
+		Index: piece.Index,
+		Buff:  make([]byte, piece.Length),
+	}
+	p.CurrentPiece = &state
+	// Setting a deadline helps get unresponsive peers unstuck.
+	// 30 seconds is more than enough time to download a 262 KB piece
+	// p.Socket.SetDeadline(time.Now().Add(30 * time.Second))
+	// defer p.Socket.SetDeadline(time.Time{}) // Disable the deadline
+
+	for state.Downloaded < piece.Length {
+		// If unchoked, send requests until we have enough unfulfilled requests
+		if !p.AmChoking {
+			for state.Backlog < maxBacklog && state.Requested < piece.Length {
+				blockSize := maxRequestLength
+				leftToRequest := piece.Length - state.Requested
+				// Last block might be shorter than the typical block
+				if leftToRequest < blockSize {
+					blockSize = leftToRequest
+				}
+
+				err := p.requestPiece(piece.Index, state.Requested, blockSize)
+				if err != nil {
+					return nil, err
+				}
+				state.Backlog++
+				state.Requested += blockSize
+			}
+		}
+
+		message, err := p.readMessage()
+		if err != nil {
+			return nil, err
+		}
+		p.handleMessage(message)
+	}
+
+	return state.Buff, nil
+}
+
+func (p *peerConnection) requestPiece(index int, begin int, length int) error {
+	m := message{
+		Length: 13,
+		ID:     msgRequest,
+	}
+	payload := make([]byte, 12)
+	binary.BigEndian.PutUint32(payload[0:4], uint32(index))
+	binary.BigEndian.PutUint32(payload[4:8], uint32(begin))
+	binary.BigEndian.PutUint32(payload[8:12], uint32(length))
+	m.Payload = payload
+	err := p.writeMessage(m)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *peerConnection) handlePiece(m message) error {
+	if m.ID != msgPiece {
+		return fmt.Errorf("Expected PIECE (ID %d), got ID %d", msgPiece, m.ID)
+	}
+	if len(m.Payload) < 8 {
+		return fmt.Errorf("Payload too short. %d < 8", len(m.Payload))
+	}
+	parsedIndex := int(binary.BigEndian.Uint32(m.Payload[0:4]))
+	if parsedIndex != p.CurrentPiece.Index {
+		return fmt.Errorf("Expected index %d, got %d", p.CurrentPiece.Index, parsedIndex)
+	}
+	begin := int(binary.BigEndian.Uint32(m.Payload[4:8]))
+	if begin >= len(p.CurrentPiece.Buff) {
+		return fmt.Errorf("Begin offset too high. %d >= %d", begin, len(p.CurrentPiece.Buff))
+	}
+	data := m.Payload[8:]
+	if begin+len(data) > len(p.CurrentPiece.Buff) {
+		return fmt.Errorf("Data too long [%d] for offset %d with length %d", len(data), begin, len(p.CurrentPiece.Buff))
+	}
+	copy(p.CurrentPiece.Buff[begin:], data)
+	bytesWritten := len(data)
+	p.CurrentPiece.Downloaded += bytesWritten
+	p.CurrentPiece.Backlog--
+	return nil
 }
 
 func (p *peerConnection) sendInterested() error {
@@ -263,8 +402,7 @@ func (p *peerConnection) writeMessage(m message) error {
 	if err != nil {
 		return err
 	}
-	bytesWritten, err := p.Socket.Write(writeBuffer.Bytes())
-	fmt.Printf("Bytes written to socket: %d \n", bytesWritten)
+	_, err = p.Socket.Write(writeBuffer.Bytes())
 	if err != nil {
 		return err
 	}
@@ -295,8 +433,7 @@ func (p *peerConnection) write(payload interface{}) error {
 	if err != nil {
 		return err
 	}
-	bytesWritten, err := p.Socket.Write(writeBuffer.Bytes())
-	fmt.Printf("Bytes written to socket: %d \n", bytesWritten)
+	_, err = p.Socket.Write(writeBuffer.Bytes())
 	if err != nil {
 		return err
 	}
