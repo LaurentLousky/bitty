@@ -2,6 +2,7 @@ package magneturi
 
 import (
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -39,20 +40,24 @@ func Parse(uri string) MagnetURI {
 
 // Download a Magnet URI torrent to the file system
 func (m *MagnetURI) Download() error {
+	fmt.Println("Getting peers...")
 	peers, err := m.requestPeers()
 	file := &peer.File{
 		Name:     m.Name,
 		InfoHash: m.InfoHash,
 		Peers:    peers,
 	}
+	fmt.Println("Getting metadata...")
 	err = file.GetMetadata()
 	if err != nil {
 		return err
 	}
+	fmt.Println("Preparing for download...")
 	err = file.Metadata.PrepareForDownload()
 	if err != nil {
 		return err
 	}
+	fmt.Println("Beginning download...")
 	peer.Download(file)
 	if err != nil {
 		return err

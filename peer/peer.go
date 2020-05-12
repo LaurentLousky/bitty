@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"runtime"
 	"strconv"
 	"time"
 )
@@ -114,7 +116,7 @@ func (p Peer) String() string {
 // Download begins the Peer Wire Protocol with each peer over TCP
 func Download(file *File) error {
 	inputPieces := make(chan *inputPiece, numPiecesInMovie(file.Metadata))
-	// outputPieces := make(chan *outputPiece)
+	outputPieces := make(chan *outputPiece)
 	for i := file.Metadata.MovieStartPiece; i < file.Metadata.MovieEndPiece; i++ {
 		length, err := file.Metadata.calculatePieceSize(i)
 		if err != nil {
@@ -124,27 +126,40 @@ func Download(file *File) error {
 	}
 
 	for i := 0; i < len(file.Peers); i++ {
-		startDownloadWorker(file, file.Peers[i], inputPieces)
+		go startDownloadWorker(file, file.Peers[i], inputPieces, outputPieces)
 	}
+
+	f, err := os.Create(file.Metadata.MoviePath[len(file.Metadata.MoviePath)-1])
+	if err != nil {
+		return err
+	}
+	for i := 0; i < numPiecesInMovie(file.Metadata); i++ {
+		donePiece := <-outputPieces
+		percentDone := ((float32(i) + 1) / float32(numPiecesInMovie(file.Metadata))) * 100
+		f.WriteAt(donePiece.Buff, int64(donePiece.Index*file.Metadata.PieceLength))
+		fmt.Printf("Downloaded piece at index %d, of length: %d \n", donePiece.Index, len(donePiece.Buff))
+		fmt.Printf("Currently downloading from %d peers \n", runtime.NumGoroutine()-1)
+		fmt.Printf("Percent done: %0.2f %%", percentDone)
+	}
+
 	return errors.New("Some error here")
 }
 
-func startDownloadWorker(file *File, peer Peer, inputPieces chan *inputPiece) error {
+func startDownloadWorker(file *File, peer Peer, inputPieces chan *inputPiece, outputPieces chan *outputPiece) {
 	conn, err := net.DialTimeout("tcp", peer.String(), 6*time.Second)
 	if err != nil {
-		return errors.New("Failed to connect to peer")
+		return
 	}
 	p := newPeerConnection(file, conn)
 	err = p.peerWireProtocol()
 	if err != nil {
 		conn.Close()
-		return errors.New("Failed to PWP with peer")
+		return
 	}
-	beginDownload(p, inputPieces)
-	return nil
+	beginDownload(p, inputPieces, outputPieces)
 }
 
-func beginDownload(p *peerConnection, inputPieces chan *inputPiece) {
+func beginDownload(p *peerConnection, inputPieces chan *inputPiece, outputPieces chan *outputPiece) {
 	for piece := range inputPieces {
 		if !p.hasPiece(piece.Index) {
 			inputPieces <- piece
@@ -152,8 +167,9 @@ func beginDownload(p *peerConnection, inputPieces chan *inputPiece) {
 		}
 		buf, err := p.attemptDownloadPiece(piece)
 		if err != nil {
-			log.Println("Exiting", err)
+			log.Println("Failed to download piece", err)
 			inputPieces <- piece // Put piece back on the queue
+			p.Socket.Close()
 			return
 		}
 		err = validatePiece(piece, buf)
@@ -162,7 +178,7 @@ func beginDownload(p *peerConnection, inputPieces chan *inputPiece) {
 			inputPieces <- piece // Put piece back on the queue
 			continue
 		}
-		fmt.Printf("Downloaded piece of length: %d \n", len(buf))
+		outputPieces <- &outputPiece{piece.Index, buf}
 	}
 }
 
@@ -302,8 +318,8 @@ func (p *peerConnection) attemptDownloadPiece(piece *inputPiece) ([]byte, error)
 	p.CurrentPiece = &state
 	// Setting a deadline helps get unresponsive peers unstuck.
 	// 30 seconds is more than enough time to download a 262 KB piece
-	// p.Socket.SetDeadline(time.Now().Add(30 * time.Second))
-	// defer p.Socket.SetDeadline(time.Time{}) // Disable the deadline
+	p.Socket.SetDeadline(time.Now().Add(30 * time.Second))
+	defer p.Socket.SetDeadline(time.Time{}) // Disable the deadline
 
 	for state.Downloaded < piece.Length {
 		// If unchoked, send requests until we have enough unfulfilled requests
