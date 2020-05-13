@@ -12,21 +12,26 @@ type fileInfo struct {
 
 // TorrentInfo represents the info section of a torrent file (the metadata)
 type TorrentInfo struct {
-	Pieces                string     `bencode:"pieces"`
-	PieceLength           int        `bencode:"piece length"`
-	Length                int        `bencode:"length"`
-	Name                  string     `bencode:"name"`
-	Files                 []fileInfo `bencode:"files"`
-	PiecesList            [][20]byte
-	MetadataSize          int
-	MovieSize             int
-	MoviePath             []string
-	MovieStartByte        int
-	MovieEndByte          int
-	MovieStartPiece       int
-	MovieEndPiece         int
-	MovieStartPieceOffset int
-	MovieEndPieceOffset   int
+	Pieces       string     `bencode:"pieces"`
+	PieceLength  int        `bencode:"piece length"`
+	Length       int        `bencode:"length"`
+	Name         string     `bencode:"name"`
+	Files        []fileInfo `bencode:"files"`
+	PiecesList   [][20]byte
+	MetadataSize int
+	Movie        movie
+}
+
+type movie struct {
+	Size             int
+	Path             []string
+	StartByte        int
+	EndByte          int
+	StartPiece       int
+	EndPiece         int
+	StartPieceOffset int
+	EndPieceOffset   int
+	NumPieces        int
 }
 
 // PrepareForDownload rearranges the metadata to allow for easier calculations when downloading
@@ -35,6 +40,7 @@ func (t *TorrentInfo) PrepareForDownload() error {
 	err = t.splitPieceHashes()
 	t.setMovieSize()
 	t.setMovieBounds()
+	t.seMovietNumPieces()
 	return err
 }
 
@@ -65,38 +71,38 @@ func (t *TorrentInfo) setMovieSize() {
 			moviePath = file.Path
 		}
 	}
-	t.MovieSize = movieSize
-	t.MoviePath = moviePath
+	t.Movie.Size = movieSize
+	t.Movie.Path = moviePath
 }
 
 func (t *TorrentInfo) setMovieBounds() {
 	bytesBeforeMovie := 0
 	for _, file := range t.Files {
-		if file.Length != t.MovieSize {
+		if file.Length != t.Movie.Size {
 			bytesBeforeMovie += file.Length
 		} else {
 			break
 		}
 	}
-	t.MovieStartByte = bytesBeforeMovie
-	t.MovieEndByte = bytesBeforeMovie + t.MovieSize
-	t.MovieStartPiece = t.MovieStartByte / t.PieceLength
-	t.MovieEndPiece = t.MovieEndByte / t.PieceLength
-	t.MovieStartPieceOffset = t.MovieStartByte % t.PieceLength
-	t.MovieEndPieceOffset = t.MovieEndByte % t.PieceLength
+	t.Movie.StartByte = bytesBeforeMovie
+	t.Movie.EndByte = bytesBeforeMovie + t.Movie.Size
+	t.Movie.StartPiece = t.Movie.StartByte / t.PieceLength
+	t.Movie.EndPiece = t.Movie.EndByte / t.PieceLength
+	t.Movie.StartPieceOffset = t.Movie.StartByte % t.PieceLength
+	t.Movie.EndPieceOffset = t.Movie.EndByte % t.PieceLength
 }
 
 func (t *TorrentInfo) calculatePieceSize(index int) (int, error) {
-	if index < t.MovieStartPiece {
+	if index < t.Movie.StartPiece {
 		return 0, errors.New("Index cannot be smaller than the movie start index")
 	}
-	bytesLeft := t.MovieSize - ((index - t.MovieStartPiece) * t.PieceLength)
+	bytesLeft := t.Movie.Size - ((index - t.Movie.StartPiece) * t.PieceLength)
 	if t.PieceLength < bytesLeft {
 		return t.PieceLength, nil
 	}
 	return bytesLeft, nil
 }
 
-func numPiecesInMovie(t *TorrentInfo) int {
-	return t.MovieEndPiece - t.MovieStartPiece
+func (t *TorrentInfo) seMovietNumPieces() {
+	t.Movie.NumPieces = t.Movie.EndPiece - t.Movie.StartPiece
 }

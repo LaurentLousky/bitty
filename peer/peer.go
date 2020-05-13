@@ -112,11 +112,11 @@ func (p Peer) String() string {
 	return net.JoinHostPort(p.IP.String(), strconv.Itoa(int(p.Port)))
 }
 
-// Download begins the Peer Wire Protocol with each peer over TCP
-func Download(file *File) error {
-	inputPieces := make(chan *inputPiece, numPiecesInMovie(file.Metadata))
+// DownloadMovie only downloads the largest file (the movie) from the torrent
+func DownloadMovie(file *File) error {
+	inputPieces := make(chan *inputPiece, file.Metadata.Movie.NumPieces)
 	outputPieces := make(chan *outputPiece)
-	for i := file.Metadata.MovieStartPiece; i < file.Metadata.MovieEndPiece; i++ {
+	for i := file.Metadata.Movie.StartPiece; i < file.Metadata.Movie.EndPiece; i++ {
 		length, err := file.Metadata.calculatePieceSize(i)
 		if err != nil {
 			return err
@@ -128,13 +128,13 @@ func Download(file *File) error {
 		go startDownloadWorker(file, file.Peers[i], inputPieces, outputPieces)
 	}
 
-	f, err := os.Create("movies/" + file.Metadata.MoviePath[len(file.Metadata.MoviePath)-1])
+	f, err := os.Create("movies/" + file.Metadata.Movie.Path[len(file.Metadata.Movie.Path)-1])
 	if err != nil {
 		return err
 	}
-	for i := 0; i < numPiecesInMovie(file.Metadata); i++ {
+	for i := 0; i < file.Metadata.Movie.NumPieces; i++ {
 		donePiece := <-outputPieces
-		percentDone := ((float32(i) + 1) / float32(numPiecesInMovie(file.Metadata))) * 100
+		percentDone := ((float32(i) + 1) / float32(file.Metadata.Movie.NumPieces)) * 100
 		f.WriteAt(donePiece.Buff, int64(donePiece.Index*file.Metadata.PieceLength))
 		fmt.Printf("Downloaded piece at index %d, of length: %d \n", donePiece.Index, len(donePiece.Buff))
 		fmt.Printf("Currently downloading from %d peers \n", runtime.NumGoroutine()-1)
