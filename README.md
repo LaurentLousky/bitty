@@ -1,10 +1,18 @@
-# stream
-BitTorrent client that streams directly to VLC
+# bitty
 
-references: \
-https://wiki.theory.org/index.php/BitTorrentSpecification \
-https://libtorrent.org/udp_tracker_protocol.html \
-https://www.bittorrent.org/beps/bep_0009.html \
-https://en.wikipedia.org/wiki/Torrent_file \
-https://blog.jse.li/posts/torrent/ \
-http://web.cs.ucla.edu/classes/cs217/05BitTorrent.pdf 
+Little BitTorent client written in Go
+
+Supports:
+
+- [Magnet Links](https://en.wikipedia.org/wiki/Magnet_URI_scheme)
+
+- [UDP Tracker Protocol](http://bittorrent.org/beps/bep_0015.html)
+
+- [Extension for Peers to Send Metadata Files](http://bittorrent.org/beps/bep_0009.html)
+
+- [BitTorrent Protocol (only leeches)](http://bittorrent.org/beps/bep_0003.html)
+
+
+Inspired by:
+
+https://blog.jse.li/posts/torrent/
