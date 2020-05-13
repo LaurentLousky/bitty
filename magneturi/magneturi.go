@@ -58,7 +58,7 @@ func (m *MagnetURI) Download() error {
 		return err
 	}
 	fmt.Println("Beginning download...")
-	peer.Download(file)
+	peer.DownloadMovie(file)
 	if err != nil {
 		return err
 	}
