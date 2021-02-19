@@ -1,6 +1,6 @@
 # bitty
 
-Little BitTorent client written in Go
+Little BitTorrent client written in Go
 
 Supports:
 
